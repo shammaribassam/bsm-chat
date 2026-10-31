@@ -1,0 +1,29 @@
+# Single-instance deployment. Persistent disk requires a paid Render service.
+# Review the current cost in the Render Dashboard before applying.
+services:
+  - type: web
+    name: bsm-chat
+    runtime: node
+    plan: 0.5c-512mb
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    disk:
+      name: bsm-chat-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /var/data/bsm.sqlite
+      - key: APP_SECRET
+        generateValue: true
+      - key: PUBLIC_URL
+        sync: false
+      - key: ALLOW_REGISTRATION
+        value: "true"
+      - key: ENABLE_TIKTOK
+        value: "false"

@@ -1,0 +1,22 @@
+{
+  "name": "bsm-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check providers.js && node --check public/app.js",
+    "dev": "node --env-file-if-exists=.env server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.0",
+    "helmet": "^8.1.0",
+    "ws": "^8.18.0",
+    "tiktok-live-connector": "^2.1.0"
+  }
+}
