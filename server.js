@@ -1,3 +1,4 @@
+
 import express from 'express';
 import {emoteImageHosts} from './public/emotes.js';
 import {performAction} from './moderation.js';
@@ -8,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {database,cipher,hash,random,passwordHash,passwordCheck,defaults,cleanSettings,normalize} from './core.js';
 import {Providers,specs,oauthParams,exchange,identity,verifyKick} from './providers.js';
+
 export function createApp(env=process.env){
  const base=(env.PUBLIC_URL||'http://localhost:3000').replace(/\/$/,'');const origin=new URL(base).origin;
  if(!env.APP_SECRET||env.APP_SECRET.length<32)throw Error('Set APP_SECRET to at least 32 random characters');
@@ -35,7 +37,7 @@ export function createApp(env=process.env){
  function setSession(res,user){const token=random();db.prepare('INSERT INTO sessions VALUES(?,?,?)').run(hash(token),user,Date.now()+7*86400000);res.cookie(cookieName,token,{httpOnly:true,secure:env.NODE_ENV==='production',sameSite:'lax',path:'/',maxAge:7*86400000})}
  const authLimiter=rateLimit({windowMs:900000,limit:20,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'محاولات كثيرة؛ حاول لاحقًا'}});
  app.get('/healthz',(req,res)=>{db.prepare('SELECT 1').get();res.json({ok:true})});
- app.post('/api/register',authLimiter,async(req,res)=>{if(env.ALLOW_REGISTRATION==='false')return res.status(403).json({error:'التسجيل مغلق حاليًا'});const {email,password,name}=req.body||{};if(typeof email!=='string'||!/^\S+@\S+\.\S+$/.test(email)||email.length>254||typeof password!=='string'||password.length<12||password.length>128||typeof name!=='string'||!name.trim()||name.length>60)return res.status(400).json({error:'أدخل اسمًا وبريدًا صحيحًا وكلمة مرور من 12 إلى 128 حرفًا'});const id=crypto.randomUUID(),overlay=random(),pass=await passwordHash(password);try{db.prepare('INSERT INTO users(id,email,name,password,overlay_hash,overlay_secret,created) VALUES(?,?,?,?,?,?,?)').run(id,email.toLowerCase().trim(),name.trim(),pass,hash(overlay),crypt.seal(overlay),Date.now());setSession(res,id);res.status(201).json({ok:true})}catch{return res.status(409).json({error:'تعذّر إنشاء الحساب؛ جرّب بريدًا آخر'})}});
+ app.post('/api/register',authLimiter,async(req,res)=>{if(env.ALLOW_REGISTRATION==='false')return res.status(403).json({error:'التسجيل مغلق حاليًا'});const {email,password,name}=req.body||{};if(typeof email!=='string'||!/^\S+@\S+\.\S+$/.test(email)||email.length>254||typeof password!=='string'||password.length<8||password.length>128||typeof name!=='string'||!name.trim()||name.length>60)return res.status(400).json({error:'أدخل اسمًا وبريدًا صحيحًا وكلمة مرور من 8 إلى 128 حرفًا'});const id=crypto.randomUUID(),overlay=random(),pass=await passwordHash(password);try{db.prepare('INSERT INTO users(id,email,name,password,overlay_hash,overlay_secret,created) VALUES(?,?,?,?,?,?,?)').run(id,email.toLowerCase().trim(),name.trim(),pass,hash(overlay),crypt.seal(overlay),Date.now());setSession(res,id);res.status(201).json({ok:true})}catch{return res.status(409).json({error:'تعذّر إنشاء الحساب؛ جرّب بريدًا آخر'})}});
  const dummy=passwordHash(random());
  app.post('/api/login',authLimiter,async(req,res)=>{const {email,password}=req.body||{};if(typeof email!=='string'||typeof password!=='string'||password.length>128)return res.status(400).json({error:'بيانات غير صحيحة'});const row=db.prepare('SELECT * FROM users WHERE email=?').get(email.toLowerCase().trim());const valid=await passwordCheck(password,row?.password||await dummy);if(!row||!valid)return res.status(401).json({error:'البريد أو كلمة المرور غير صحيحة'});setSession(res,row.id);res.json({ok:true})});
  app.post('/api/logout',auth,(req,res)=>{db.prepare('DELETE FROM sessions WHERE token=?').run(req.user.session_hash);for(const entry of listeners.get(req.user.id)||[])if(entry.session===req.user.session_hash)entry.res.end();res.clearCookie(cookieName,{path:'/',secure:env.NODE_ENV==='production',httpOnly:true,sameSite:'lax'});res.json({ok:true})});
@@ -85,4 +87,5 @@ export function createApp(env=process.env){
  function close(){clearInterval(cleanup);providers.close();for(const entries of listeners.values())for(const e of entries)e.res.end();db.close()}
  return {app,db,providers,publish,close,restore};
 }
+
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){const runtime=createApp();const server=runtime.app.listen(Number(process.env.PORT||process.argv[process.argv.indexOf('--port')+1])||3000,'0.0.0.0',()=>{console.log('BSM Chat server ready');void runtime.restore()});for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{runtime.close();server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),5000).unref()})}
