@@ -1,5 +1,5 @@
 import {messageSegments} from './public/emotes.js';
-import {DatabaseSync} from 'node:sqlite';
+import {createClient} from '@libsql/client';
 import {mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
 import crypto from 'node:crypto';
@@ -10,14 +10,34 @@ export const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
 export async function passwordHash(value){const salt=random();return salt+':'+(await scrypt(value,salt,64)).toString('hex')}
 export async function passwordCheck(value,stored){const [salt,key]=stored.split(':');const actual=await scrypt(value,salt,64);return crypto.timingSafeEqual(actual,Buffer.from(key,'hex'))}
 export function cipher(secret){const key=crypto.createHash('sha256').update(secret).digest();return {seal(value){const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([c.update(JSON.stringify(value)),c.final()]);return Buffer.concat([iv,c.getAuthTag(),data]).toString('base64')},open(value){const b=Buffer.from(value,'base64'),c=crypto.createDecipheriv('aes-256-gcm',key,b.subarray(0,12));c.setAuthTag(b.subarray(12,28));return JSON.parse(Buffer.concat([c.update(b.subarray(28)),c.final()]).toString())}}}
-export function database(path){mkdirSync(dirname(path),{recursive:true});const db=new DatabaseSync(path);db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password TEXT NOT NULL,overlay_hash TEXT UNIQUE NOT NULL,overlay_secret TEXT NOT NULL,settings TEXT NOT NULL DEFAULT '{}',created INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS oauth(state TEXT PRIMARY KEY,user_id TEXT NOT NULL,provider TEXT NOT NULL,verifier TEXT NOT NULL,session_hash TEXT NOT NULL,expires INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS connections(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,provider TEXT NOT NULL,external_id TEXT NOT NULL,channel TEXT NOT NULL,secret TEXT NOT NULL,PRIMARY KEY(user_id,provider),UNIQUE(provider,external_id));
-CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,event_key TEXT NOT NULL,payload TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(user_id,event_key));
-CREATE INDEX IF NOT EXISTS events_user ON events(user_id,seq);
-CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,created INTEGER NOT NULL);`);return db}
+// Use one async interface for local SQLite (tests/dev) and the remote Turso database.
+export async function database(path,env=process.env){
+ const url=env.TURSO_DATABASE_URL,token=env.TURSO_AUTH_TOKEN;
+ if(Boolean(url)!==Boolean(token))throw Error('Both TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required');
+ if(!url)mkdirSync(dirname(path),{recursive:true});
+ const client=createClient(url?{url,authToken:token}:{url:'file:'+path});
+ try{
+  await client.execute('PRAGMA foreign_keys=ON');
+  const schema=[
+   "CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password TEXT NOT NULL,overlay_hash TEXT UNIQUE NOT NULL,overlay_secret TEXT NOT NULL,settings TEXT NOT NULL DEFAULT '{}',created INTEGER NOT NULL)",
+   "CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires INTEGER NOT NULL)",
+   "CREATE TABLE IF NOT EXISTS oauth(state TEXT PRIMARY KEY,user_id TEXT NOT NULL,provider TEXT NOT NULL,verifier TEXT NOT NULL,session_hash TEXT NOT NULL,expires INTEGER NOT NULL)",
+   "CREATE TABLE IF NOT EXISTS connections(user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,provider TEXT NOT NULL,external_id TEXT NOT NULL,channel TEXT NOT NULL,secret TEXT NOT NULL,PRIMARY KEY(user_id,provider),UNIQUE(provider,external_id))",
+   "CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,event_key TEXT NOT NULL,payload TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(user_id,event_key))",
+   "CREATE INDEX IF NOT EXISTS events_user ON events(user_id,seq)",
+   "CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY,created INTEGER NOT NULL)"
+  ];
+  await client.batch(schema,'write');
+ }catch(error){client.close();throw error}
+ return {
+  prepare(sql){return {
+   async run(...args){const result=await client.execute({sql,args});return {changes:result.rowsAffected,lastInsertRowid:result.lastInsertRowid}},
+   async get(...args){const result=await client.execute({sql,args});return result.rows[0]},
+   async all(...args){const result=await client.execute({sql,args});return result.rows}
+  }},
+  close(){client.close()}
+ };
+}
 export const defaults={accent:'#b9f76c',fontSize:18,transparent:true,chat:true,subscription:true,gift:true,like:true,follow:true,share:true,cheer:true,raid:true,blockedWords:''};
 export function cleanSettings(value){const out={};for(const k of Object.keys(defaults)){if(typeof defaults[k]==='boolean'&&typeof value[k]==='boolean')out[k]=value[k]}if(/^#[0-9a-f]{6}$/i.test(value.accent||''))out.accent=value.accent;if(Number.isInteger(value.fontSize)&&value.fontSize>=12&&value.fontSize<=40)out.fontSize=value.fontSize;if(typeof value.blockedWords==='string')out.blockedWords=value.blockedWords.slice(0,1000);return out}
 export function normalize(provider,type,e){let kind='chat',name='',text='',count=1,id=e.message_id||e.id;
