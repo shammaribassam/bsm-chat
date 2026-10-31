@@ -45,4 +45,4 @@ else if(type==='gift'){const gift=e.gift||e.giftDetails||{};if((e.giftType===1||
 else if(type==='like'){kind='like';count=Number(e.likeCount)||1;text=`أرسل ${count} قلبًا ❤️`}
 else if(type==='follow'){kind='follow';text='تابع البث'}else if(type==='share'){kind='share';text='شارك البث'}else return null;
 }else return null;
-return {id:String(id||random()),provider,kind,name:String(name).slice(0,100),text:String(text).slice(0,2000),count,time:Date.now()}}
+return {id:String(id||random()),provider,kind,userId:String(provider==='twitch'?(e.chatter_user_id||''):provider==='kick'?(e.sender?.user_id||''):(e.user?.userId||e.userId||'')),name:String(name).slice(0,100),text:String(text).slice(0,2000),count,time:Date.now()}}

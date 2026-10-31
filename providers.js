@@ -2,8 +2,8 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import {normalize} from './core.js';
 export const specs={
- twitch:{authorize:'https://id.twitch.tv/oauth2/authorize',token:'https://id.twitch.tv/oauth2/token',scope:'user:read:chat channel:read:subscriptions bits:read moderator:read:followers'},
- kick:{authorize:'https://id.kick.com/oauth/authorize',token:'https://id.kick.com/oauth/token',scope:'user:read events:subscribe'}
+ twitch:{authorize:'https://id.twitch.tv/oauth2/authorize',token:'https://id.twitch.tv/oauth2/token',scope:'user:read:chat channel:read:subscriptions bits:read moderator:read:followers user:write:chat moderator:manage:chat_messages moderator:manage:banned_users'},
+ kick:{authorize:'https://id.kick.com/oauth/authorize',token:'https://id.kick.com/oauth/token',scope:'user:read events:subscribe chat:write moderation:ban moderation:chat_message:manage'}
 };
 export async function request(url,options={}){const r=await fetch(url,{...options,signal:AbortSignal.timeout(15000)});const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={}}if(!r.ok){const error=new Error('provider_http_'+r.status);error.status=r.status;throw error}return data}
 export function oauthParams(provider,env){const prefix=provider.toUpperCase();return {client_id:env[prefix+'_CLIENT_ID'],client_secret:env[prefix+'_CLIENT_SECRET']}}
@@ -14,7 +14,7 @@ export function verifyKick(key,id,timestamp,body,signature,now=Date.now()){
  try{return crypto.verify('RSA-SHA256',Buffer.concat([Buffer.from(id+'.'+timestamp+'.'),body]),key,Buffer.from(signature,'base64'))}catch{return false}
 }
 export class Providers{
- constructor({db,crypt,env,publish,status}){Object.assign(this,{db,crypt,env,publish,status});this.active=new Map();this.refreshes=new Map();this.kickKey=null}
+ constructor({db,crypt,env,publish,status}){Object.assign(this,{db,crypt,env,publish,status});this.http=request;this.active=new Map();this.refreshes=new Map();this.kickKey=null}
  row(user,provider){return this.db.prepare('SELECT * FROM connections WHERE user_id=? AND provider=?').get(user,provider)}
  data(row){return this.crypt.open(row.secret)}
  write(user,provider,data){this.db.prepare('UPDATE connections SET secret=? WHERE user_id=? AND provider=?').run(this.crypt.seal(data),user,provider)}

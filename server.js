@@ -1,4 +1,5 @@
 import express from 'express';
+import {performAction} from './moderation.js';
 import helmet from 'helmet';
 import {rateLimit} from 'express-rate-limit';
 import crypto from 'node:crypto';
@@ -39,6 +40,31 @@ export function createApp(env=process.env){
  app.post('/api/logout',auth,(req,res)=>{db.prepare('DELETE FROM sessions WHERE token=?').run(req.user.session_hash);for(const entry of listeners.get(req.user.id)||[])if(entry.session===req.user.session_hash)entry.res.end();res.clearCookie(cookieName,{path:'/',secure:env.NODE_ENV==='production',httpOnly:true,sameSite:'lax'});res.json({ok:true})});
  const ready=p=>Boolean(env[p.toUpperCase()+'_CLIENT_ID']&&env[p.toUpperCase()+'_CLIENT_SECRET']);
  app.get('/api/me',auth,(req,res)=>{const rows=db.prepare('SELECT provider,channel FROM connections WHERE user_id=?').all(req.user.id);const connections={};for(const row of rows)connections[row.provider]={channel:row.channel,...(states.get(req.user.id)?.[row.provider]||{state:'saved',detail:'محفوظ؛ أعد الاتصال'})};res.json({name:req.user.name,email:req.user.email,connections,settings:{...defaults,...JSON.parse(req.user.settings)},overlay:base+'/overlay.html#'+crypt.open(req.user.overlay_secret),capabilities:{twitch:ready('twitch'),kick:ready('kick'),tiktok:env.ENABLE_TIKTOK==='true'}})});
+ app.post('/api/chat/:provider/action',auth,async(req,res)=>{
+  const p=req.params.provider,input=req.body||{};
+  if(!['twitch','kick','tiktok'].includes(p)||!['send','delete','timeout','ban','unban'].includes(input.action))return res.status(400).json({error:'إجراء غير صالح'});
+  if(p==='tiktok')return res.status(422).json({error:'موصل تيك توك الحالي للاستقبال فقط؛ الإدارة من تطبيق تيك توك'});
+  const {action}=input;
+  if(action==='send'&&(typeof input.text!=='string'||!input.text.trim()||input.text.length>500))return res.status(400).json({error:'اكتب رسالة من 1 إلى 500 حرف'});
+  if(action==='timeout'&&(!Number.isInteger(input.duration)||input.duration<1||input.duration>10080))return res.status(400).json({error:'مدة التايم أوت من دقيقة إلى 10080 دقيقة'});
+  if(input.reason!==undefined&&(typeof input.reason!=='string'||input.reason.length>100))return res.status(400).json({error:'السبب بحد أقصى 100 حرف'});
+  let message;
+  if(action!=='send'||input.messageId){
+   message=db.prepare('SELECT payload FROM events WHERE user_id=? ORDER BY seq DESC LIMIT 300').all(req.user.id).map(r=>JSON.parse(r.payload)).find(m=>m.provider===p&&m.id===input.messageId&&m.kind==='chat');
+   if(!message)return res.status(404).json({error:'الرسالة غير متاحة في سجل حسابك'});
+   if(['ban','timeout','unban'].includes(action)&&!/^\d+$/.test(message.userId||''))return res.status(422).json({error:'هذه رسالة قديمة دون معرّف المستخدم؛ اختر رسالة جديدة'});
+  }
+  try{
+   await performAction(providers,req.user.id,p,{...input,text:input.text?.trim(),reason:input.reason||'',message});
+   if(action==='delete'){
+    for(const row of db.prepare('SELECT seq,payload FROM events WHERE user_id=?').all(req.user.id)){
+     const event=JSON.parse(row.payload);if(event.provider===p&&event.id===message.id)db.prepare('DELETE FROM events WHERE seq=? AND user_id=?').run(row.seq,req.user.id);
+    }
+    broadcast(req.user.id,'removed',{provider:p,id:message.id});
+   }
+   res.json({ok:true});
+  }catch(e){const known=[409,422].includes(e.status);res.status(known?e.status:502).json({error:known?e.message:e.status===401||e.status===403?'رفضت المنصة الصلاحية؛ أعد تفويض الحساب من ربط المنصات':'تعذّر تنفيذ الإجراء لدى المنصة؛ تحقق من الاتصال وحالة المستخدم ثم أعد المحاولة'});}
+ });
  app.put('/api/settings',auth,(req,res)=>{const settings={...defaults,...JSON.parse(req.user.settings),...cleanSettings(req.body||{})};db.prepare('UPDATE users SET settings=? WHERE id=?').run(JSON.stringify(settings),req.user.id);broadcast(req.user.id,'settings',settings);res.json(settings)});
  app.post('/api/overlay/rotate',auth,(req,res)=>{const token=random();db.prepare('UPDATE users SET overlay_hash=?,overlay_secret=? WHERE id=?').run(hash(token),crypt.seal(token),req.user.id);for(const entry of listeners.get(req.user.id)||[])if(entry.overlay)entry.res.end();res.json({url:base+'/overlay.html#'+token})});
  function overlayUser(req){const key=req.get('Authorization')?.replace(/^Bearer /,'');if(!key||key.length>100)return null;return db.prepare('SELECT * FROM users WHERE overlay_hash=?').get(hash(key))}
