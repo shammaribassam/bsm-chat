@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check providers.js && node --check moderation.js && node --check public-readers.js && node --check public/app.js && node --check public/overlay.js",
+    "check": "node --check server.js && node --check providers.js && node --check moderation.js && node --check public/app.js && node --check public/overlay.js",
     "dev": "node --env-file-if-exists=.env server.js"
   },
   "dependencies": {
