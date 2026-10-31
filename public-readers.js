@@ -24,7 +24,7 @@ export function startTwitchReader(manager,row){
    const m=parseIRC(line),t=m.tags;
    if(m.command==='PING'){socket.send('PONG :'+m.text+'\r\n');continue}
    if(m.command==='RECONNECT'){socket.close();continue}
-   if(m.command==='ROOMSTATE'&&m.params[0]==='#'+row.channel){joined=true;h.attempt=0;status('connected','متصل بالشات العام • استقبال فقط')}
+   if((['ROOMSTATE','JOIN'].includes(m.command)&&m.params[0]==='#'+row.channel)||(m.command==='366'&&m.params.includes('#'+row.channel))){joined=true;h.attempt=0;status('connected','متصل بالشات العام • استقبال فقط')}
    if(m.command==='NOTICE'&&!joined)status('error','رفض تويتش الاتصال بهذه القناة؛ تحقق من الاسم أو استخدم التفويض الاختياري');
    if(m.command==='PRIVMSG'&&m.params[0]==='#'+row.channel){
     const event=normalize('twitch','channel.chat.message',{message_id:t.id,chatter_user_id:t['user-id'],chatter_user_name:t['display-name']||m.prefix.split('!')[0],message:{text:m.text}});
