@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {startTwitchReader,startKickReader} from './public-readers.js';
 import WebSocket from 'ws';
 import {normalize} from './core.js';
 export const specs={
@@ -20,7 +21,7 @@ export class Providers{
  write(user,provider,data){this.db.prepare('UPDATE connections SET secret=? WHERE user_id=? AND provider=?').run(this.crypt.seal(data),user,provider)}
  async token(user,provider){const key=user+':'+provider;if(this.refreshes.has(key))return this.refreshes.get(key);const run=async()=>{const row=this.row(user,provider);if(!row)throw Error('disconnected');let d=this.data(row);if(d.expires>Date.now()+60000)return d.access_token;const fresh=await exchange(provider,this.env,{grant_type:'refresh_token',refresh_token:d.refresh_token});d={...d,...fresh,expires:Date.now()+Number(fresh.expires_in)*1000};if(this.row(user,provider))this.write(user,provider,d);return d.access_token};const p=run();this.refreshes.set(key,p);try{return await p}finally{this.refreshes.delete(key)}}
  stop(user,provider){const key=user+':'+provider;const h=this.active.get(key);if(h){h.stopped=true;clearTimeout(h.retry);clearTimeout(h.watch);for(const socket of h.sockets||[])socket.close();try{h.client?.disconnect()}catch{}this.active.delete(key)}}
- async start(user,provider){this.stop(user,provider);const row=this.row(user,provider);if(!row)return;if(provider==='twitch')return this.twitch(row);if(provider==='kick')return this.kick(row);return this.tiktok(row)}
+ async start(user,provider){this.stop(user,provider);const row=this.row(user,provider);if(!row){const reader=this.db.prepare('SELECT * FROM public_readers WHERE user_id=? AND provider=?').get(user,provider);if(!reader)return;if(provider==='twitch')return startTwitchReader(this,reader);if(provider==='kick')return startKickReader(this,reader);return this.tiktok(reader)}if(provider==='twitch')return this.twitch(row);if(provider==='kick')return this.kick(row);return this.tiktok(row)}
  async twitch(row){const user=row.user_id,key=user+':twitch',h={sockets:new Set(),stopped:false,attempt:0};this.active.set(key,h);const sendStatus=(state,detail)=>this.status(user,'twitch',state,detail);
  const dial=(url='wss://eventsub.wss.twitch.tv/ws',old=null)=>{
  if(h.stopped)return;sendStatus('connecting','جاري الاتصال');const socket=new WebSocket(url);h.sockets.add(socket);let welcomed=false,transferred=false,keepalive=30;

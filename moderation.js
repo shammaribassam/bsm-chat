@@ -1,7 +1,7 @@
 // The channel always comes from the authenticated owner's connection.
 export async function performAction(providers,user,provider,input){
  const row=providers.row(user,provider);
- if(!row)throw Object.assign(Error('اربط حساب المنصة أولًا'),{status:409});
+ if(!row)throw Object.assign(Error('استقبال الشات لا يمنح صلاحية الإدارة؛ فعّل تفويض القناة الاختياري أولًا'),{status:409});
  if(!['twitch','kick'].includes(provider))throw Object.assign(Error('موصل تيك توك الحالي للاستقبال فقط؛ استخدم أدوات تيك توك للإدارة'),{status:422});
  const token=await providers.token(user,provider),channel=row.external_id;
  const headers={Authorization:'Bearer '+token,'Content-Type':'application/json',...(provider==='twitch'?{'Client-Id':providers.env.TWITCH_CLIENT_ID}:{})};
