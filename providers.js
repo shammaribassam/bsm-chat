@@ -1,44 +1,397 @@
+
 import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import {normalize} from './core.js';
+
 export const specs={
- twitch:{authorize:'https://id.twitch.tv/oauth2/authorize',token:'https://id.twitch.tv/oauth2/token',scope:'user:read:chat channel:read:subscriptions bits:read moderator:read:followers user:write:chat moderator:manage:chat_messages moderator:manage:banned_users'},
- kick:{authorize:'https://id.kick.com/oauth/authorize',token:'https://id.kick.com/oauth/token',scope:'user:read events:subscribe chat:write moderation:ban moderation:chat_message:manage'}
+ twitch:{
+  authorize:'https://id.twitch.tv/oauth2/authorize',
+  token:'https://id.twitch.tv/oauth2/token',
+  scope:'user:read:chat channel:read:subscriptions bits:read moderator:read:followers user:write:chat moderator:manage:chat_messages moderator:manage:banned_users'
+ },
+ kick:{
+  authorize:'https://id.kick.com/oauth/authorize',
+  token:'https://id.kick.com/oauth/token',
+  scope:'user:read events:subscribe chat:write moderation:ban moderation:chat_message:manage'
+ }
 };
-export async function request(url,options={}){const r=await fetch(url,{...options,signal:AbortSignal.timeout(15000)});const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={}}if(!r.ok){const error=new Error('provider_http_'+r.status);error.status=r.status;throw error}return data}
-export function oauthParams(provider,env){const prefix=provider.toUpperCase();return {client_id:env[prefix+'_CLIENT_ID'],client_secret:env[prefix+'_CLIENT_SECRET']}}
-export async function exchange(provider,env,extra){return request(specs[provider].token,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...oauthParams(provider,env),...extra})})}
-export async function identity(provider,env,token){if(provider==='twitch'){const d=await request('https://api.twitch.tv/helix/users',{headers:{Authorization:'Bearer '+token,'Client-Id':env.TWITCH_CLIENT_ID}});return {id:String(d.data[0].id),name:d.data[0].login}}const d=await request('https://api.kick.com/public/v1/users',{headers:{Authorization:'Bearer '+token}});return {id:String(d.data[0].user_id),name:d.data[0].name}}
+
+export async function request(url,options={}){
+ const r=await fetch(url,{...options,signal:AbortSignal.timeout(15000)});
+ const text=await r.text();
+ let data;
+ try{data=JSON.parse(text)}catch{data={}}
+ if(!r.ok){
+  const error=new Error('provider_http_'+r.status);
+  error.status=r.status;
+  throw error;
+ }
+ return data;
+}
+
+export function oauthParams(provider,env){
+ const prefix=provider.toUpperCase();
+ return {
+  client_id:env[prefix+'_CLIENT_ID'],
+  client_secret:env[prefix+'_CLIENT_SECRET']
+ };
+}
+
+export async function exchange(provider,env,extra){
+ return request(specs[provider].token,{
+  method:'POST',
+  headers:{'Content-Type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({...oauthParams(provider,env),...extra})
+ });
+}
+
+export async function identity(provider,env,token){
+ if(provider==='twitch'){
+  const d=await request('https://api.twitch.tv/helix/users',{
+   headers:{Authorization:'Bearer '+token,'Client-Id':env.TWITCH_CLIENT_ID}
+  });
+  return {id:String(d.data[0].id),name:d.data[0].login};
+ }
+ const d=await request('https://api.kick.com/public/v1/users',{
+  headers:{Authorization:'Bearer '+token}
+ });
+ return {id:String(d.data[0].user_id),name:d.data[0].name};
+}
+
 export function verifyKick(key,id,timestamp,body,signature,now=Date.now()){
  if(!id||!timestamp||!signature||!Number.isFinite(Date.parse(timestamp))||Math.abs(now-Date.parse(timestamp))>300000)return false;
- try{return crypto.verify('RSA-SHA256',Buffer.concat([Buffer.from(id+'.'+timestamp+'.'),body]),key,Buffer.from(signature,'base64'))}catch{return false}
+ try{
+  return crypto.verify(
+   'RSA-SHA256',
+   Buffer.concat([Buffer.from(id+'.'+timestamp+'.'),body]),
+   key,
+   Buffer.from(signature,'base64')
+  );
+ }catch{return false}
 }
+
 export class Providers{
- constructor({db,crypt,env,publish,status}){Object.assign(this,{db,crypt,env,publish,status});this.http=request;this.active=new Map();this.refreshes=new Map();this.kickKey=null}
- row(user,provider){return this.db.prepare('SELECT * FROM connections WHERE user_id=? AND provider=?').get(user,provider)}
- data(row){return this.crypt.open(row.secret)}
- write(user,provider,data){this.db.prepare('UPDATE connections SET secret=? WHERE user_id=? AND provider=?').run(this.crypt.seal(data),user,provider)}
- async token(user,provider){const key=user+':'+provider;if(this.refreshes.has(key))return this.refreshes.get(key);const run=async()=>{const row=this.row(user,provider);if(!row)throw Error('disconnected');let d=this.data(row);if(d.expires>Date.now()+60000)return d.access_token;const fresh=await exchange(provider,this.env,{grant_type:'refresh_token',refresh_token:d.refresh_token});d={...d,...fresh,expires:Date.now()+Number(fresh.expires_in)*1000};if(this.row(user,provider))this.write(user,provider,d);return d.access_token};const p=run();this.refreshes.set(key,p);try{return await p}finally{this.refreshes.delete(key)}}
- stop(user,provider){const key=user+':'+provider;const h=this.active.get(key);if(h){h.stopped=true;clearTimeout(h.retry);clearTimeout(h.watch);for(const socket of h.sockets||[])socket.close();try{h.client?.disconnect()}catch{}this.active.delete(key)}}
- async start(user,provider){this.stop(user,provider);const row=this.row(user,provider);if(!row)return;if(provider==='twitch')return this.twitch(row);if(provider==='kick')return this.kick(row);return this.tiktok(row)}
- async twitch(row){const user=row.user_id,key=user+':twitch',h={sockets:new Set(),stopped:false,attempt:0};this.active.set(key,h);const sendStatus=(state,detail)=>this.status(user,'twitch',state,detail);
- const dial=(url='wss://eventsub.wss.twitch.tv/ws',old=null)=>{
- if(h.stopped)return;sendStatus('connecting','جاري الاتصال');const socket=new WebSocket(url);h.sockets.add(socket);let welcomed=false,transferred=false,keepalive=30;
- const watch=()=>{clearTimeout(h.watch);h.watch=setTimeout(()=>socket.terminate(),(keepalive+5)*1000);h.watch.unref()};
- socket.on('error',()=>{});socket.on('message',async raw=>{try{const msg=JSON.parse(raw.toString());watch();const type=msg.metadata.message_type;
- if(type==='session_welcome'){welcomed=true;h.attempt=0;keepalive=msg.payload.session.keepalive_timeout_seconds||30;watch();if(old){old.close();sendStatus('connected','متصل');return}
- const conditions={broadcaster_user_id:row.external_id};const entries=[['channel.chat.message','1',{...conditions,user_id:row.external_id}],['channel.subscribe','1',conditions],['channel.subscription.message','1',conditions],['channel.subscription.gift','1',conditions],['channel.follow','2',{...conditions,moderator_user_id:row.external_id}],['channel.cheer','1',conditions],['channel.raid','1',{to_broadcaster_user_id:row.external_id}]];
- const token=await this.token(user,'twitch');const results=await Promise.allSettled(entries.map(([type,version,condition])=>request('https://api.twitch.tv/helix/eventsub/subscriptions',{method:'POST',headers:{Authorization:'Bearer '+token,'Client-Id':this.env.TWITCH_CLIENT_ID,'Content-Type':'application/json'},body:JSON.stringify({type,version,condition,transport:{method:'websocket',session_id:msg.payload.session.id}})})));
- if(h.stopped)return;const failed=results.filter(r=>r.status==='rejected').length;sendStatus(failed?'partial':'connected',failed?`اتصال جزئي: ${failed} من أنواع الأحداث لم تقبلها المنصة`:'الدردشة والتفاعلات متصلة');
- }else if(type==='session_reconnect'){const next=msg.payload.session.reconnect_url;if(new URL(next).hostname!=='eventsub.wss.twitch.tv')throw Error('bad_reconnect');transferred=true;dial(next,socket)}
- else if(type==='notification'){const event=normalize('twitch',msg.payload.subscription.type,msg.payload.event);if(event)this.publish(user,event,'twitch:'+msg.metadata.message_id)}
- else if(type==='revocation')sendStatus('partial','أُلغي تفويض أحد الأحداث؛ أعد ربط الحساب');
- }catch{sendStatus('error','تعذّر الاشتراك بالأحداث. أعد ربط الحساب أو تحقق من صلاحيات التطبيق')}});
- socket.on('close',()=>{h.sockets.delete(socket);if(h.stopped||transferred||h.sockets.size)return;clearTimeout(h.watch);sendStatus('reconnecting',welcomed?'انقطع الاتصال، تجري المحاولة':'تعذّر الاتصال، تجري المحاولة');h.retry=setTimeout(()=>dial(),Math.min(60000,2000*2**Math.min(h.attempt++,5)));h.retry.unref()});};dial()}
- async kick(row){const user=row.user_id;this.status(user,'kick','connecting','جاري تفعيل استقبال الأحداث');try{const token=await this.token(user,'kick');const headers={Authorization:'Bearer '+token,'Content-Type':'application/json'};const existing=await request('https://api.kick.com/public/v1/events/subscriptions?broadcaster_user_id='+row.external_id,{headers});const types=['chat.message.sent','channel.followed','channel.subscription.new','channel.subscription.renewal','channel.subscription.gifts'];const known=new Set((existing.data||[]).filter(s=>String(s.broadcaster_user_id)===row.external_id).map(s=>s.event));let result={data:[]};const missing=types.filter(t=>!known.has(t));if(missing.length)result=await request('https://api.kick.com/public/v1/events/subscriptions',{method:'POST',headers,body:JSON.stringify({method:'webhook',events:missing.map(name=>({name,version:1}))})});if(!this.row(user,'kick'))return;const errors=(result.data||[]).filter(e=>e.error);this.status(user,'kick',errors.length?'partial':'waiting',errors.length?'تعذّر تفعيل بعض الأحداث؛ تحقق من إعدادات تطبيق كيك':'تم تسجيل الأحداث؛ في انتظار أول حدث. فعّل Webhook في تطبيق كيك')}
- catch{this.status(user,'kick','error','تعذّر تفعيل الأحداث. تحقق من المفاتيح وWebhook ثم أعد المحاولة')}}
- async key(force=false){if(this.kickKey&&((!force&&this.kickKey.expires>Date.now())||(force&&this.kickKey.fetched>Date.now()-60000)))return this.kickKey.key;const d=await request('https://api.kick.com/public/v1/public-key');const key=d.data?.public_key;if(!key)throw Error('no_key');this.kickKey={key,expires:Date.now()+3600000,fetched:Date.now()};return key}
- async disconnectKick(user){const row=this.row(user,'kick');if(!row)return;const token=await this.token(user,'kick');const headers={Authorization:'Bearer '+token};const d=await request('https://api.kick.com/public/v1/events/subscriptions?broadcaster_user_id='+row.external_id,{headers});const ids=(d.data||[]).filter(x=>String(x.broadcaster_user_id)===row.external_id).map(x=>x.id);if(ids.length)await request('https://api.kick.com/public/v1/events/subscriptions?'+new URLSearchParams(ids.map(id=>['id',id])),{method:'DELETE',headers})}
- async tiktok(row){const user=row.user_id,key=user+':tiktok',h={stopped:false};this.active.set(key,h);if(this.env.ENABLE_TIKTOK!=='true'){this.status(user,'tiktok','disabled','موصل تيك توك التجريبي غير مفعّل بالخادم');return}try{this.status(user,'tiktok','connecting','جاري الاتصال بالبث المباشر');const {TikTokLiveConnection,WebcastEvent,ControlEvent}=await import('tiktok-live-connector');if(h.stopped)return;const client=new TikTokLiveConnection(row.channel,{enableExtendedGiftInfo:true,...(this.env.TIKTOK_SIGN_API_KEY?{signApiKey:this.env.TIKTOK_SIGN_API_KEY}:{})});h.client=client;for(const type of ['CHAT','EMOTE','GIFT','LIKE','FOLLOW','SHARE'])client.on(WebcastEvent[type],data=>{if(h.stopped)return;const event=normalize('tiktok',type.toLowerCase(),data);if(event)this.publish(user,event,'tiktok:'+event.id)});client.on(ControlEvent.ERROR,()=>{if(!h.stopped)this.status(user,'tiktok','error','تعذّر اتصال تيك توك؛ تحقق من البث ومزود التوقيع')});client.on(ControlEvent.DISCONNECTED,()=>{if(!h.stopped)this.status(user,'tiktok','offline','انقطع البث؛ اضغط إعادة الاتصال عند بدء البث')});client.on(WebcastEvent.STREAM_END,()=>{if(!h.stopped)this.status(user,'tiktok','offline','انتهى البث')});await client.connect();if(h.stopped){client.disconnect();return}this.status(user,'tiktok','connected','متصل عبر موصل تجريبي غير رسمي')}catch{if(!h.stopped)this.status(user,'tiktok','error','البث غير متاح أو تعذّر اتصال تيك توك؛ تحقق من اسم القناة ومزود التوقيع')}}
- close(){for(const key of [...this.active.keys()]){const i=key.lastIndexOf(':');this.stop(key.slice(0,i),key.slice(i+1))}}
+ constructor({db,crypt,env,publish,status}){
+  Object.assign(this,{db,crypt,env,publish,status});
+  this.http=request;
+  this.active=new Map();
+  this.refreshes=new Map();
+  this.kickKey=null;
+ }
+
+ row(user,provider){
+  return this.db.prepare('SELECT * FROM connections WHERE user_id=? AND provider=?').get(user,provider);
+ }
+
+ data(row){
+  return this.crypt.open(row.secret);
+ }
+
+ write(user,provider,data){
+  this.db.prepare('UPDATE connections SET secret=? WHERE user_id=? AND provider=?')
+   .run(this.crypt.seal(data),user,provider);
+ }
+
+ async token(user,provider){
+  const key=user+':'+provider;
+  if(this.refreshes.has(key))return this.refreshes.get(key);
+  const run=async()=>{
+   const row=this.row(user,provider);
+   if(!row)throw Error('disconnected');
+   let d=this.data(row);
+   if(d.expires>Date.now()+60000)return d.access_token;
+   const fresh=await exchange(provider,this.env,{
+    grant_type:'refresh_token',
+    refresh_token:d.refresh_token
+   });
+   d={...d,...fresh,expires:Date.now()+Number(fresh.expires_in)*1000};
+   if(this.row(user,provider))this.write(user,provider,d);
+   return d.access_token;
+  };
+  const p=run();
+  this.refreshes.set(key,p);
+  try{return await p}
+  finally{this.refreshes.delete(key)}
+ }
+
+ stop(user,provider){
+  const key=user+':'+provider;
+  const h=this.active.get(key);
+  if(h){
+   h.stopped=true;
+   clearTimeout(h.retry);
+   clearTimeout(h.watch);
+   for(const socket of h.sockets||[])socket.close();
+   try{h.client?.disconnect()}catch{}
+   this.active.delete(key);
+  }
+ }
+
+ async start(user,provider){
+  this.stop(user,provider);
+  const row=this.row(user,provider);
+  if(!row)return;
+  if(provider==='twitch')return this.twitch(row);
+  if(provider==='kick')return this.kick(row);
+  return this.tiktok(row);
+ }
+
+ async twitch(row){
+  const user=row.user_id,key=user+':twitch';
+  const h={sockets:new Set(),stopped:false,attempt:0};
+  this.active.set(key,h);
+  const sendStatus=(state,detail)=>this.status(user,'twitch',state,detail);
+
+  const dial=(url='wss://eventsub.wss.twitch.tv/ws',old=null)=>{
+   if(h.stopped)return;
+   sendStatus('connecting','جاري الاتصال');
+   const socket=new WebSocket(url);
+   h.sockets.add(socket);
+   let welcomed=false,transferred=false,keepalive=30;
+
+   const watch=()=>{
+    clearTimeout(h.watch);
+    h.watch=setTimeout(()=>socket.terminate(),(keepalive+5)*1000);
+    h.watch.unref();
+   };
+
+   socket.on('error',()=>{});
+   socket.on('message',async raw=>{
+    try{
+     const msg=JSON.parse(raw.toString());
+     watch();
+     const type=msg.metadata.message_type;
+
+     if(type==='session_welcome'){
+      welcomed=true;
+      h.attempt=0;
+      keepalive=msg.payload.session.keepalive_timeout_seconds||30;
+      watch();
+      if(old){
+       old.close();
+       sendStatus('connected','متصل');
+       return;
+      }
+
+      const conditions={broadcaster_user_id:row.external_id};
+      const entries=[
+       ['channel.chat.message','1',{...conditions,user_id:row.external_id}],
+       ['channel.subscribe','1',conditions],
+       ['channel.subscription.message','1',conditions],
+       ['channel.subscription.gift','1',conditions],
+       ['channel.follow','2',{...conditions,moderator_user_id:row.external_id}],
+       ['channel.cheer','1',conditions],
+       ['channel.raid','1',{to_broadcaster_user_id:row.external_id}]
+      ];
+
+      const token=await this.token(user,'twitch');
+      const results=await Promise.allSettled(entries.map(([type,version,condition])=>
+       request('https://api.twitch.tv/helix/eventsub/subscriptions',{
+        method:'POST',
+        headers:{
+         Authorization:'Bearer '+token,
+         'Client-Id':this.env.TWITCH_CLIENT_ID,
+         'Content-Type':'application/json'
+        },
+        body:JSON.stringify({
+         type,version,condition,
+         transport:{method:'websocket',session_id:msg.payload.session.id}
+        })
+       })
+      ));
+
+      if(h.stopped)return;
+      const failed=results.filter(r=>r.status==='rejected').length;
+      sendStatus(
+       failed?'partial':'connected',
+       failed?`اتصال جزئي: ${failed} من أنواع الأحداث لم تقبلها المنصة`:'الدردشة والتفاعلات متصلة'
+      );
+     }else if(type==='session_reconnect'){
+      const next=msg.payload.session.reconnect_url;
+      if(new URL(next).hostname!=='eventsub.wss.twitch.tv')throw Error('bad_reconnect');
+      transferred=true;
+      dial(next,socket);
+     }else if(type==='notification'){
+      const event=normalize('twitch',msg.payload.subscription.type,msg.payload.event);
+      if(event)this.publish(user,event,'twitch:'+msg.metadata.message_id);
+     }else if(type==='revocation'){
+      sendStatus('partial','أُلغي تفويض أحد الأحداث؛ أعد ربط الحساب');
+     }
+    }catch{
+     sendStatus('error','تعذّر الاشتراك بالأحداث. أعد ربط الحساب أو تحقق من صلاحيات التطبيق');
+    }
+   });
+
+   socket.on('close',()=>{
+    h.sockets.delete(socket);
+    if(h.stopped||transferred||h.sockets.size)return;
+    clearTimeout(h.watch);
+    sendStatus('reconnecting',welcomed?'انقطع الاتصال، تجري المحاولة':'تعذّر الاتصال، تجري المحاولة');
+    h.retry=setTimeout(()=>dial(),Math.min(60000,2000*2**Math.min(h.attempt++,5)));
+    h.retry.unref();
+   });
+  };
+  dial();
+ }
+
+ async kick(row){
+  const user=row.user_id;
+  this.status(user,'kick','connecting','جاري تفعيل استقبال الأحداث');
+  try{
+   const token=await this.token(user,'kick');
+   const headers={Authorization:'Bearer '+token,'Content-Type':'application/json'};
+   const existing=await request(
+    'https://api.kick.com/public/v1/events/subscriptions?broadcaster_user_id='+row.external_id,
+    {headers}
+   );
+   const types=[
+    'chat.message.sent',
+    'channel.followed',
+    'channel.subscription.new',
+    'channel.subscription.renewal',
+    'channel.subscription.gifts'
+   ];
+   const known=new Set(
+    (existing.data||[])
+     .filter(s=>String(s.broadcaster_user_id)===row.external_id)
+     .map(s=>s.event)
+   );
+   let result={data:[]};
+   const missing=types.filter(t=>!known.has(t));
+   if(missing.length){
+    result=await request('https://api.kick.com/public/v1/events/subscriptions',{
+     method:'POST',
+     headers,
+     body:JSON.stringify({
+      method:'webhook',
+      events:missing.map(name=>({name,version:1}))
+     })
+    });
+   }
+   if(!this.row(user,'kick'))return;
+   const errors=(result.data||[]).filter(e=>e.error);
+   this.status(
+    user,'kick',
+    errors.length?'partial':'waiting',
+    errors.length?'تعذّر تفعيل بعض الأحداث؛ تحقق من إعدادات تطبيق كيك':'تم تسجيل الأحداث؛ في انتظار أول حدث. فعّل Webhook في تطبيق كيك'
+   );
+  }catch{
+   this.status(user,'kick','error','تعذّر تفعيل الأحداث. تحقق من المفاتيح وWebhook ثم أعد المحاولة');
+  }
+ }
+
+ async key(force=false){
+  if(this.kickKey&&(
+   (!force&&this.kickKey.expires>Date.now())||
+   (force&&this.kickKey.fetched>Date.now()-60000)
+  ))return this.kickKey.key;
+  const d=await request('https://api.kick.com/public/v1/public-key');
+  const key=d.data?.public_key;
+  if(!key)throw Error('no_key');
+  this.kickKey={key,expires:Date.now()+3600000,fetched:Date.now()};
+  return key;
+ }
+
+ async disconnectKick(user){
+  const row=this.row(user,'kick');
+  if(!row)return;
+  const token=await this.token(user,'kick');
+  const headers={Authorization:'Bearer '+token};
+  const d=await request(
+   'https://api.kick.com/public/v1/events/subscriptions?broadcaster_user_id='+row.external_id,
+   {headers}
+  );
+  const ids=(d.data||[])
+   .filter(x=>String(x.broadcaster_user_id)===row.external_id)
+   .map(x=>x.id);
+  if(ids.length){
+   await request(
+    'https://api.kick.com/public/v1/events/subscriptions?'+new URLSearchParams(ids.map(id=>['id',id])),
+    {method:'DELETE',headers}
+   );
+  }
+ }
+
+ async tiktok(row){
+  const user=row.user_id;
+  const key=user+':tiktok';
+  const h={stopped:false};
+  this.active.set(key,h);
+
+  if(this.env.ENABLE_TIKTOK!=='true'){
+   this.status(user,'tiktok','disabled','موصل تيك توك التجريبي غير مفعّل بالخادم');
+   return;
+  }
+
+  try{
+   this.status(user,'tiktok','connecting','جاري الاتصال بالبث المباشر');
+
+   const {TikTokLiveConnection,WebcastEvent,ControlEvent}=
+    await import('tiktok-live-connector');
+
+   if(h.stopped)return;
+
+   const client=new TikTokLiveConnection(row.channel,{
+    enableExtendedGiftInfo:true,
+    ...(this.env.TIKTOK_SIGN_API_KEY?{
+     signApiKey:this.env.TIKTOK_SIGN_API_KEY
+    }:{})
+   });
+
+   h.client=client;
+
+   for(const type of ['CHAT','EMOTE','GIFT','LIKE','FOLLOW','SHARE']){
+    client.on(WebcastEvent[type],data=>{
+     if(h.stopped)return;
+     const event=normalize('tiktok',type.toLowerCase(),data);
+     if(event)this.publish(user,event,'tiktok:'+event.id);
+    });
+   }
+
+   client.on(ControlEvent.ERROR,error=>{
+    if(h.stopped)return;
+    console.error(
+     '[TikTok] connection event error:',
+     error?.name||'Error',
+     String(error?.message||error).slice(0,500)
+    );
+    this.status(user,'tiktok','error','تعذّر اتصال تيك توك؛ راجع سجلات Render');
+   });
+
+   client.on(ControlEvent.DISCONNECTED,()=>{
+    if(!h.stopped){
+     this.status(user,'tiktok','offline','انقطع البث؛ اضغط إعادة الاتصال عند بدء البث');
+    }
+   });
+
+   client.on(WebcastEvent.STREAM_END,()=>{
+    if(!h.stopped)this.status(user,'tiktok','offline','انتهى البث');
+   });
+
+   await client.connect();
+
+   if(h.stopped){
+    client.disconnect();
+    return;
+   }
+
+   this.status(user,'tiktok','connected','متصل عبر موصل تجريبي غير رسمي');
+  }catch(error){
+   if(!h.stopped){
+    console.error(
+     '[TikTok] connect failed:',
+     error?.name||'Error',
+     String(error?.message||error).slice(0,500)
+    );
+    this.status(user,'tiktok','error','تعذّر اتصال تيك توك؛ راجع سجلات Render');
+   }
+  }
+ }
+
+ close(){
+  for(const key of [...this.active.keys()]){
+   const i=key.lastIndexOf(':');
+   this.stop(key.slice(0,i),key.slice(i+1));
+  }
+ }
 }
