@@ -9,17 +9,17 @@ import {cipher,normalize} from '../core.js';
 test('owner-scoped chat controls validate targets and provider responses',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'bsm-controls-'));
  const env={APP_SECRET:'test-secret-that-is-long-enough-123456',DB_PATH:join(dir,'db'),PUBLIC_URL:'http://localhost:3000'};
- const rt=createApp(env),server=rt.app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
+ const rt=await createApp(env),server=rt.app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
  const url='http://127.0.0.1:'+server.address().port;
  const send=(path,cookie,body)=>fetch(url+path,{method:'POST',headers:{'X-BSM-Request':'1','Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
  try{
   const reg=await send('/api/register',null,{email:'mod@example.com',name:'Moderator',password:'a-long-test-password'}),cookie=reg.headers.get('set-cookie').split(';')[0];
-  const user=rt.db.prepare('SELECT id FROM users').get().id;
-  for(const p of ['twitch','kick'])rt.db.prepare('INSERT INTO connections VALUES(?,?,?,?,?)').run(user,p,'100','owner',cipher(env.APP_SECRET).seal({access_token:'fake',expires:Date.now()+3600000}));
+  const user=(await rt.db.prepare('SELECT id FROM users').get()).id;
+  for(const p of ['twitch','kick'])await rt.db.prepare('INSERT INTO connections VALUES(?,?,?,?,?)').run(user,p,'100','owner',cipher(env.APP_SECRET).seal({access_token:'fake',expires:Date.now()+3600000}));
   const tw=normalize('twitch','channel.chat.message',{message_id:'tw-msg',chatter_user_id:'200',chatter_user_name:'Viewer',message:{text:'hello'}});
   const ki=normalize('kick','chat.message.sent',{message_id:'ki-msg',sender:{user_id:300,username:'Viewer'},content:'hello'});
   assert.equal(tw.userId,'200');assert.equal(ki.userId,'300');
-  rt.publish(user,tw,'tw');rt.publish(user,ki,'ki');
+  await rt.publish(user,tw,'tw');await rt.publish(user,ki,'ki');
   const calls=[];rt.providers.http=async(u,o)=>{calls.push({url:u,...o,body:o.body?JSON.parse(o.body):undefined});return u.includes('helix/chat/messages')?{data:[{is_sent:true}]}:u.endsWith('/v1/chat')?{data:{is_sent:true}}:{}};
   const action=(p,b,c=cookie)=>send('/api/chat/'+p+'/action',c,b);
   assert.equal((await action('twitch',{action:'ban',messageId:'tw-msg'},'')).status,401);
@@ -40,10 +40,10 @@ test('owner-scoped chat controls validate targets and provider responses',async(
   assert.equal((await action('twitch',{action:'send',text:'rejected'})).status,422);
   rt.providers.http=async()=>{throw Object.assign(Error('forbidden'),{status:403})};
   assert.equal((await action('kick',{action:'delete',messageId:'ki-msg'})).status,502);
-  assert(rt.db.prepare('SELECT payload FROM events WHERE event_key=?').get('ki'));
+  assert(await rt.db.prepare('SELECT payload FROM events WHERE event_key=?').get('ki'));
   rt.providers.http=async()=>({});
   assert.equal((await action('kick',{action:'delete',messageId:'ki-msg'})).status,200);
-  assert.equal(rt.db.prepare('SELECT payload FROM events WHERE event_key=?').get('ki'),undefined);
-  assert(rt.db.prepare('SELECT payload FROM events WHERE event_key=?').get('tw'));
- }finally{rt.close();await new Promise(r=>server.close(r));rmSync(dir,{recursive:true,force:true})}
+  assert.equal(await rt.db.prepare('SELECT payload FROM events WHERE event_key=?').get('ki'),undefined);
+  assert(await rt.db.prepare('SELECT payload FROM events WHERE event_key=?').get('tw'));
+ }finally{await rt.close();await new Promise(r=>server.close(r));rmSync(dir,{recursive:true,force:true})}
 });

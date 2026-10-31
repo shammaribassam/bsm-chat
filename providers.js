@@ -79,16 +79,16 @@ export class Providers{
   this.kickKey=null;
  }
 
- row(user,provider){
-  return this.db.prepare('SELECT * FROM connections WHERE user_id=? AND provider=?').get(user,provider);
+ async row(user,provider){
+  return await this.db.prepare('SELECT * FROM connections WHERE user_id=? AND provider=?').get(user,provider);
  }
 
  data(row){
   return this.crypt.open(row.secret);
  }
 
- write(user,provider,data){
-  this.db.prepare('UPDATE connections SET secret=? WHERE user_id=? AND provider=?')
+ async write(user,provider,data){
+  await this.db.prepare('UPDATE connections SET secret=? WHERE user_id=? AND provider=?')
    .run(this.crypt.seal(data),user,provider);
  }
 
@@ -96,7 +96,7 @@ export class Providers{
   const key=user+':'+provider;
   if(this.refreshes.has(key))return this.refreshes.get(key);
   const run=async()=>{
-   const row=this.row(user,provider);
+   const row=await this.row(user,provider);
    if(!row)throw Error('disconnected');
    let d=this.data(row);
    if(d.expires>Date.now()+60000)return d.access_token;
@@ -105,7 +105,7 @@ export class Providers{
     refresh_token:d.refresh_token
    });
    d={...d,...fresh,expires:Date.now()+Number(fresh.expires_in)*1000};
-   if(this.row(user,provider))this.write(user,provider,d);
+   if(await this.row(user,provider))await this.write(user,provider,d);
    return d.access_token;
   };
   const p=run();
@@ -129,7 +129,7 @@ export class Providers{
 
  async start(user,provider){
   this.stop(user,provider);
-  const row=this.row(user,provider);
+  const row=await this.row(user,provider);
   if(!row)return;
   if(provider==='twitch')return this.twitch(row);
   if(provider==='kick')return this.kick(row);
@@ -213,7 +213,7 @@ export class Providers{
       dial(next,socket);
      }else if(type==='notification'){
       const event=normalize('twitch',msg.payload.subscription.type,msg.payload.event);
-      if(event)this.publish(user,event,'twitch:'+msg.metadata.message_id);
+      if(event)await this.publish(user,event,'twitch:'+msg.metadata.message_id);
      }else if(type==='revocation'){
       sendStatus('partial','أُلغي تفويض أحد الأحداث؛ أعد ربط الحساب');
      }
@@ -268,7 +268,7 @@ export class Providers{
      })
     });
    }
-   if(!this.row(user,'kick'))return;
+   if(!await this.row(user,'kick'))return;
    const errors=(result.data||[]).filter(e=>e.error);
    this.status(
     user,'kick',
@@ -293,7 +293,7 @@ export class Providers{
  }
 
  async disconnectKick(user){
-  const row=this.row(user,'kick');
+  const row=await this.row(user,'kick');
   if(!row)return;
   const token=await this.token(user,'kick');
   const headers={Authorization:'Bearer '+token};
@@ -344,7 +344,7 @@ export class Providers{
     client.on(WebcastEvent[type],data=>{
      if(h.stopped)return;
      const event=normalize('tiktok',type.toLowerCase(),data);
-     if(event)this.publish(user,event,'tiktok:'+event.id);
+     if(event)void this.publish(user,event,'tiktok:'+event.id).catch(()=>this.status(user,'tiktok','error','تعذّر حفظ حدث تيك توك'));
     });
    }
 
