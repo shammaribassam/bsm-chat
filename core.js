@@ -1,3 +1,4 @@
+import {messageSegments} from './public/emotes.js';
 import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
@@ -40,9 +41,11 @@ else if(type==='channel.followed'){kind='follow';text='تابع القناة'}
 else return null;
 }else if(provider==='tiktok'){
 name=e.user?.nickname||e.user?.uniqueId||e.nickname||e.uniqueId||'مستخدم';id=e.common?.msgId||e.msgId||id;
-if(type==='chat')text=e.comment||'';
+if(type==='chat')text=e.comment||e.content||'';
+else if(type==='emote')text='';
 else if(type==='gift'){const gift=e.gift||e.giftDetails||{};if((e.giftType===1||gift.giftType===1||gift.type===1)&&!e.repeatEnd)return null;kind='gift';count=Number(e.repeatCount)||1;text=`أرسل ${e.giftName||e.extendedGiftInfo?.name||gift.name||'هدية'} × ${count} 🎁`}
 else if(type==='like'){kind='like';count=Number(e.likeCount)||1;text=`أرسل ${count} قلبًا ❤️`}
 else if(type==='follow'){kind='follow';text='تابع البث'}else if(type==='share'){kind='share';text='شارك البث'}else return null;
 }else return null;
-return {id:String(id||random()),provider,kind,userId:String(provider==='twitch'?(e.chatter_user_id||''):provider==='kick'?(e.sender?.user_id||''):(e.user?.userId||e.userId||'')),name:String(name).slice(0,100),text:String(text).slice(0,2000),count,time:Date.now()}}
+text=String(text).slice(0,2000);
+return {id:String(id||random()),provider,kind,...(kind==='chat'?{segments:messageSegments(provider,e,text)}:{}),userId:String(provider==='twitch'?(e.chatter_user_id||''):provider==='kick'?(e.sender?.user_id||''):(e.user?.userId||e.user?.idStr||e.user?.id||e.userId||'')),name:String(name).slice(0,100),text:String(text).slice(0,2000),count,time:Date.now()}}

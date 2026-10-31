@@ -1,4 +1,5 @@
 import express from 'express';
+import {emoteImageHosts} from './public/emotes.js';
 import {performAction} from './moderation.js';
 import helmet from 'helmet';
 import {rateLimit} from 'express-rate-limit';
@@ -12,7 +13,7 @@ export function createApp(env=process.env){
  if(!env.APP_SECRET||env.APP_SECRET.length<32)throw Error('Set APP_SECRET to at least 32 random characters');
  if(env.NODE_ENV==='production'&&!base.startsWith('https://'))throw Error('Production PUBLIC_URL must use HTTPS');
  const db=database(env.DB_PATH||'./data/bsm.sqlite'),crypt=cipher(env.APP_SECRET);const app=express();app.disable('x-powered-by');app.set('trust proxy',1);
- app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],connectSrc:["'self'"],imgSrc:["'self'","data:"],frameAncestors:["'none'"]}},strictTransportSecurity:env.NODE_ENV==='production'?undefined:false}));
+ app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'","'unsafe-inline'"],connectSrc:["'self'"],imgSrc:["'self'","data:",...emoteImageHosts.flatMap(h=>['https://'+h,...(!['static-cdn.jtvnw.net','files.kick.com'].includes(h)?['https://*.'+h]:[])])],frameAncestors:["'none'"],upgradeInsecureRequests:env.NODE_ENV==='production'?[]:null}},strictTransportSecurity:env.NODE_ENV==='production'?undefined:false}));
  app.use((req,res,next)=>{res.set('Referrer-Policy','no-referrer');if(req.path.startsWith('/api/')||req.path.startsWith('/auth/'))res.set('Cache-Control','no-store');next()});
  const listeners=new Map(),states=new Map();
  function broadcast(user,type,data){for(const entry of listeners.get(user)||[])entry.res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`)}
