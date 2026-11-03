@@ -20,7 +20,21 @@ export async function createApp(env=process.env){
  const listeners=new Map(),states=new Map();
  function broadcast(user,type,data){for(const entry of listeners.get(user)||[])entry.res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`)}
  function status(user,provider,state,detail){if(!states.has(user))states.set(user,{});states.get(user)[provider]={state,detail};broadcast(user,'status',{provider,state,detail})}
- async function publish(user,event,key){const result=await db.prepare('INSERT OR IGNORE INTO events(user_id,event_key,payload,created) VALUES(?,?,?,?)').run(user,key,JSON.stringify(event),Date.now());if(!result.changes)return;broadcast(user,'message',event);await db.prepare('DELETE FROM events WHERE user_id=? AND seq NOT IN (SELECT seq FROM events WHERE user_id=? ORDER BY seq DESC LIMIT 300)').run(user,user)}
+ async function relayArcade(user,event){
+  if(event.provider!=='twitch'||event.kind!=='chat'||!env.ARCADE_RELAY_SECRET||!env.ARCADE_RELAY_URL)return;
+  try{
+   const row=await db.prepare("SELECT channel FROM connections WHERE user_id=? AND provider='twitch'").get(user);
+   if(!row?.channel)return;
+   const body=JSON.stringify({platform:'twitch',channel:row.channel,username:event.name,message:event.text});
+   const stamp=String(Date.now());
+   const signature='sha256='+crypto.createHmac('sha256',env.ARCADE_RELAY_SECRET).update(stamp+'.'+body).digest('hex');
+   const url=new URL(env.ARCADE_RELAY_URL);
+   if(url.protocol!=='https:'||url.pathname!=='/api/arcade/chat-relay')return;
+   const response=await fetch(url,{method:'POST',headers:{'content-type':'application/json','x-bsm-timestamp':stamp,'x-bsm-signature':signature},body,signal:AbortSignal.timeout(5000)});
+   if(!response.ok)console.warn('Arcade relay status',response.status);
+  }catch(error){console.warn('Arcade relay unavailable:',error.message)}
+ }
+ async function publish(user,event,key){const result=await db.prepare('INSERT OR IGNORE INTO events(user_id,event_key,payload,created) VALUES(?,?,?,?)').run(user,key,JSON.stringify(event),Date.now());if(!result.changes)return;broadcast(user,'message',event);void relayArcade(user,event);await db.prepare('DELETE FROM events WHERE user_id=? AND seq NOT IN (SELECT seq FROM events WHERE user_id=? ORDER BY seq DESC LIMIT 300)').run(user,user)}
  const providers=new Providers({db,crypt,env,publish,status});
  app.post('/webhooks/kick',express.raw({type:'application/json',limit:'256kb'}),async(req,res)=>{
  try{if(!Buffer.isBuffer(req.body))return res.sendStatus(400);const id=req.get('Kick-Event-Message-Id'),stamp=req.get('Kick-Event-Message-Timestamp'),sig=req.get('Kick-Event-Signature');if(!id||id.length>200||!sig||sig.length>2000||!Number.isFinite(Date.parse(stamp))||Math.abs(Date.now()-Date.parse(stamp))>300000)return res.sendStatus(401);let key=await providers.key();if(!verifyKick(key,id,stamp,req.body,sig)){key=await providers.key(true);if(!verifyKick(key,id,stamp,req.body,sig))return res.sendStatus(401)}
